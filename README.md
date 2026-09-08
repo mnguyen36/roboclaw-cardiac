@@ -4,6 +4,9 @@ A 3D surgical planning and precision-simulation suite for robotic heart surgery.
 procedures are modelled step by step, and every cut, stitch and measurement is scored against
 the surgical plan so a human hand can be compared directly with robotic execution.
 
+
+**Live:** https://mnguyen36.github.io/roboclaw-cardiac/
+
 ## Running it
 
 ```
@@ -25,6 +28,18 @@ arteriotomy, a 14-bite running anastomosis, transit-time flow measurement and we
 Thirteen steps: right-sided access, left atriotomy, valve exposure, caliper analysis, triangular
 resection of P2, leaflet re-approximation, two PTFE neochordae with adjustable length, ring sizing
 and implantation, and a saline competence test that produces a regurgitant jet if the repair is off.
+
+## Finding your way around
+
+A guidance cue marks the single most useful control at each moment: the procedure list on
+first load, the answer options on a decision step, the button that arms a precision task,
+then `Next step` once the step is satisfied. It scrolls the control into view if it has
+fallen below the fold, and dismissing it once turns hints off for good (Settings brings
+them back).
+
+**Exploded view** lifts the coronary and venous tree radially off the heart and ghosts the
+myocardium behind it, with every vessel labelled. Picking is suspended while it is open,
+because the displacement happens in the vertex shader and the pickable geometry stays put.
 
 ## What gets measured
 

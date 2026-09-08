@@ -15,6 +15,7 @@ import { Physiology, formatClock } from './physiology';
 import { Store, initialState, MODE_LABELS, MODE_DESCRIPTIONS, type AppState, type ControlMode } from './state';
 import { buildLayout, el, type Layout } from '../ui/layout';
 import { VitalsMonitor } from '../ui/Vitals';
+import { Coach } from '../ui/coach';
 import { icons } from '../ui/icons';
 import type { ProcedureDef, StepDef, Task, TaskResult, SurgeryContext, Metric } from '../surgery/types';
 import { grade } from '../surgery/types';
@@ -52,12 +53,14 @@ export class App {
   private activeScene: 'heart' | 'valve' = 'heart';
   private pointerCaptured = false;
   private unsubTask: (() => void) | null = null;
+  private coach: Coach;
 
   constructor(root: HTMLElement) {
     this.layout = buildLayout(root);
     this.sm = new SceneManager(this.layout.viewport);
     this.sm.renderer.localClippingEnabled = true;
     this.vitals = new VitalsMonitor(this.layout.vitalsCanvas, this.layout.vitalsNumbers, this.phys);
+    this.coach = new Coach(document.body);
     this.sm.start();
     this.bindChrome();
     void this.init();
@@ -233,6 +236,62 @@ export class App {
       anyVisible = anyVisible || obj.visible;
     }
     this.sm.setLabelsActive(anyVisible || this.overlays.hasLabels());
+  }
+
+  // ------------------------------------------------------------------ guidance
+  /**
+   * Works out the single most useful control right now and points the coach at it.
+   * Called after every render of the panel, steps or picker, so the cue follows the case
+   * without any explicit scripting per step.
+   */
+  private updateCoach(): void {
+    if (this.coach.isDismissed) return;
+    const q = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel);
+    const rt = this.currentStep();
+
+    if (!this.procedure) {
+      this.coach.show({ target: q('.procedure-card'), text: 'Start here: pick a procedure', side: 'right' });
+      return;
+    }
+    if (!rt) { this.coach.hide(); return; }
+
+    // A decision step: the options are the action.
+    if (rt.task && !rt.task.robotic && !rt.task.result) {
+      this.coach.show({ target: q('.task .option'), text: 'Choose an answer' });
+      return;
+    }
+
+    if (rt.task && !rt.task.result) {
+      const phase = (rt.task as unknown as { phase: string }).phase;
+      if (phase === 'armed' || phase === 'active') {
+        // the viewport hint already explains the gesture, so stay out of the way
+        this.coach.hide();
+        return;
+      }
+      if (phase === 'executing') { this.coach.hide(); return; }
+      const btn = q<HTMLButtonElement>('.task .task-actions .btn.is-primary');
+      this.coach.show({ target: btn, text: this.store.state.controlMode === 'autonomous' ? 'Let the robot run it' : 'Begin when ready' });
+      return;
+    }
+
+    if (rt.def.action && !rt.actionDone) {
+      if (rt.actionRunning) { this.coach.hide(); return; }
+      this.coach.show({ target: q('.task .task-body .btn.is-primary'), text: 'Run this step' });
+      return;
+    }
+
+    // Step satisfied: move the user on, or to the report at the end.
+    const idx = this.store.state.stepIndex;
+    if (idx === this.steps.length - 1 && this.stepComplete(rt)) {
+      this.coach.show({ target: q('#panel-footer .btn.is-primary') ?? this.layout.btnReport, text: 'See how you did' });
+      return;
+    }
+    const next = q<HTMLButtonElement>('#panel-footer .btn.is-block');
+    if (next && this.stepComplete(rt)) {
+      this.coach.show({ target: next, text: 'Next step' });
+      return;
+    }
+    this.coach.hide();
   }
 
   // ------------------------------------------------------------------ exploded view
@@ -599,6 +658,7 @@ export class App {
         <p>Explore the patient's heart, then load one of the two procedures on the left. Every incision and suture is measured against the surgical plan so you can compare a human hand with robotic execution.</p>
         <div class="note"><b>Two procedures.</b> A robotic LIMA to LAD bypass, where the anastomosis is sewn on a 2 mm artery, and a mitral valve repair, where leaflet resection, neochordae and ring sizing all come down to a millimetre.</div>
         <p>Drag to orbit the heart, scroll to zoom. Turn on labels from the controls in the viewport.</p>`;
+      this.updateCoach();
       return;
     }
     const idx = this.store.state.stepIndex;
@@ -632,6 +692,7 @@ export class App {
       next.addEventListener('click', () => { if (!this.stepComplete(rt)) rt.skipped = true; this.goToStep(idx + 1); });
       panelFooter.appendChild(next);
     }
+    this.updateCoach();
   }
 
   private renderTaskCard(rt: StepRuntime): HTMLElement {
@@ -829,6 +890,7 @@ export class App {
             <option value="auto" ${this.sm.quality.auto ? 'selected' : ''}>Automatic</option>
             ${(['ultra', 'high', 'medium', 'low'] as QualityTier[]).map((t) => `<option value="${t}" ${!this.sm.quality.auto && this.sm.quality.tier === t ? 'selected' : ''}>${t[0].toUpperCase() + t.slice(1)}</option>`).join('')}
           </select></div>
+        <div class="row"><div><b>Guidance hints</b><p>Points out the next control to use as the case progresses.</p></div><button type="button" class="switch ${this.coach.isDismissed ? '' : 'is-on'}" id="set-coach" role="switch" aria-checked="${!this.coach.isDismissed}" aria-label="Guidance hints"></button></div>
         <div class="row"><div><b>Reset the case</b><p>Clears all results and restarts the selected procedure.</p></div><button type="button" class="btn is-danger" id="set-reset">Reset case</button></div>
         <div class="row"><div><b>About</b><p>RoboClaw Cardiac generates the anatomy procedurally from a signed distance model at 1 mm resolution. Measurements are in millimetres of the modelled heart, roughly 13 cm long.</p></div></div>
       </div>
@@ -840,6 +902,13 @@ export class App {
       if (v === 'auto') { this.sm.quality.auto = true; this.sm.quality.apply(); }
       else this.sm.quality.setTier(v as QualityTier, false);
       this.renderStatus();
+    });
+    modal.querySelector<HTMLButtonElement>('#set-coach')!.addEventListener('click', (e) => {
+      const on = this.coach.isDismissed; // toggling on means clearing the dismissal
+      this.coach.setDismissed(!on);
+      (e.currentTarget as HTMLElement).classList.toggle('is-on', on);
+      (e.currentTarget as HTMLElement).setAttribute('aria-checked', String(on));
+      this.updateCoach();
     });
     modal.querySelector<HTMLButtonElement>('#set-reset')!.addEventListener('click', () => {
       const proc = this.procedure;
