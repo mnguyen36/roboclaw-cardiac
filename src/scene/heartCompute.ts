@@ -9,12 +9,12 @@
  * Units: the field is sculpted in normalised units, exported geometry is in centimetres.
  * Axes: +x = patient's left, +y = superior, +z = anterior.
  */
-import { Color, Vector3 } from 'three';
+import { Color } from 'three';
 import { SdfModel, ellipsoid, tube, splinePoints, splineRadii, type V3 } from './sdf';
 import { sampleField, extractIsosurface, orientToNormals, laplacianSmooth } from './marchingCubes';
 import { noise, clamp, smoothstep } from './noise';
 
-export const ANATOMY_VERSION = '2026.09.08-seat1';
+export const ANATOMY_VERSION = '2026.09.08-anat2';
 export const SCALE = 6.5; // centimetres per model unit
 
 export const Part = {
@@ -37,6 +37,25 @@ function along(t: number): V3 {
 
 function add(a: V3, b: V3): V3 { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
 
+/**
+ * The atrioventricular ring, in the plane perpendicular to the heart's long axis.
+ * `phi` runs from the anterior midline round towards the patient's left.
+ */
+export function avRing(phi: number, radius = 0.62): V3 {
+  const L = axisDir();
+  const up: V3 = [0, 1, 0];
+  const ux = up[1] * L[2] - up[2] * L[1], uy = up[2] * L[0] - up[0] * L[2], uz = up[0] * L[1] - up[1] * L[0];
+  const ul = Math.hypot(ux, uy, uz) || 1;
+  const u: V3 = [ux / ul, uy / ul, uz / ul];
+  const v: V3 = [L[1] * u[2] - L[2] * u[1], L[2] * u[0] - L[0] * u[2], L[0] * u[1] - L[1] * u[0]];
+  const c = Math.cos(phi), sn = Math.sin(phi);
+  return [
+    BASE[0] + (u[0] * c + v[0] * sn) * radius,
+    BASE[1] + (u[1] * c + v[1] * sn) * radius,
+    BASE[2] + (u[2] * c + v[2] * sn) * radius,
+  ];
+}
+
 export interface VesselDef {
   id: string;
   label: string;
@@ -58,7 +77,7 @@ export const VESSEL_DEFS: VesselDef[] = [
     id: 'LAD', label: 'Left anterior descending artery', kind: 'artery',
     control: [[0.16, 0.3, 0.31], [0.15, 0.19, 0.41], [0.18, 0.04, 0.49], [0.26, -0.26, 0.55], [0.38, -0.56, 0.52], [0.5, -0.8, 0.4], [0.6, -0.93, 0.22]],
     radii: [0.029, 0.027, 0.025, 0.022, 0.019, 0.015, 0.011],
-    stenosis: { t: 0.3, width: 0.05, severity: 0.72 },
+    stenosis: { t: 0.36, width: 0.05, severity: 0.72 },
   },
   {
     id: 'D1', label: 'First diagonal branch', kind: 'artery',
@@ -66,8 +85,9 @@ export const VESSEL_DEFS: VesselDef[] = [
     radii: [0.016, 0.014, 0.011, 0.008],
   },
   {
+    // Arises well distal to the planned anastomosis: the heel bite must not sit on a branch ostium.
     id: 'D2', label: 'Second diagonal branch', kind: 'artery',
-    control: [[0.3, -0.36, 0.545], [0.45, -0.5, 0.45], [0.56, -0.68, 0.35]],
+    control: [[0.345, -0.46, 0.535], [0.48, -0.58, 0.44], [0.58, -0.74, 0.34]],
     radii: [0.012, 0.01, 0.007],
   },
   {
@@ -81,33 +101,46 @@ export const VESSEL_DEFS: VesselDef[] = [
     radii: [0.017, 0.014, 0.011, 0.008],
   },
   {
+    // Traced along the right atrioventricular groove the model actually carves, so the artery
+    // sits in its bed instead of being projected onto whichever structure happens to be
+    // nearest. That is what previously draped it over the inferior vena cava.
     id: 'RCA', label: 'Right coronary artery', kind: 'artery',
-    control: [[-0.12, 0.33, 0.22], [-0.28, 0.28, 0.32], [-0.45, 0.18, 0.34], [-0.6, 0.05, 0.26], [-0.68, -0.08, 0.1], [-0.66, -0.16, -0.12], [-0.55, -0.2, -0.32], [-0.38, -0.22, -0.46], [-0.2, -0.22, -0.52]],
-    radii: [0.028, 0.027, 0.026, 0.024, 0.022, 0.02, 0.019, 0.018, 0.017],
+    control: [
+      [-0.12, 0.33, 0.22], [-0.30, 0.28, 0.38], [-0.42, 0.20, 0.42], [-0.49, 0.14, 0.24],
+      [-0.58, 0.07, 0.14], [-0.60, 0.00, 0.03], [-0.58, -0.05, -0.09], [-0.53, -0.10, -0.24],
+      [-0.46, -0.09, -0.40], [-0.30, -0.02, -0.50], [-0.16, 0.02, -0.52],
+    ],
+    radii: [0.028, 0.027, 0.026, 0.025, 0.024, 0.023, 0.022, 0.021, 0.020, 0.019, 0.018],
   },
   {
     id: 'PDA', label: 'Posterior descending artery', kind: 'artery',
-    control: [[-0.2, -0.22, -0.52], [-0.05, -0.4, -0.5], [0.15, -0.6, -0.38], [0.38, -0.8, -0.15], [0.52, -0.9, 0.05]],
+    control: [[-0.16, 0.02, -0.52], [-0.06, -0.28, -0.52], [0.10, -0.56, -0.42], [0.32, -0.78, -0.18], [0.50, -0.90, 0.04]],
     radii: [0.016, 0.014, 0.012, 0.01, 0.008],
   },
   {
     id: 'AM', label: 'Acute marginal branch', kind: 'artery',
-    control: [[-0.6, 0.05, 0.26], [-0.5, -0.2, 0.36], [-0.35, -0.45, 0.42], [-0.15, -0.65, 0.42]],
+    control: [[-0.60, 0.00, 0.03], [-0.52, -0.24, 0.14], [-0.38, -0.46, 0.24], [-0.18, -0.62, 0.30]],
     radii: [0.014, 0.012, 0.01, 0.007],
   },
   {
+    // Runs on the left ventricular side of the anterior interventricular groove, a clear
+    // 5-6 mm off the LAD, then turns into the left atrioventricular groove and becomes the
+    // coronary sinus. Ordered apex first so the calibre grows towards the sinus.
     id: 'GCV', label: 'Great cardiac vein', kind: 'vein',
-    control: [[0.22, 0.28, 0.26], [0.2, 0.17, 0.38], [0.23, 0.02, 0.46], [0.31, -0.28, 0.52], [0.43, -0.58, 0.49], [0.54, -0.8, 0.37]],
-    radii: [0.028, 0.026, 0.024, 0.021, 0.017, 0.012],
+    control: [
+      [0.60, -0.80, 0.30], [0.50, -0.56, 0.44], [0.40, -0.26, 0.50], [0.33, 0.02, 0.45],
+      [0.33, 0.20, 0.34], [0.40, 0.27, 0.16], [0.47, 0.24, -0.01], [0.50, 0.16, -0.15],
+    ],
+    radii: [0.012, 0.017, 0.021, 0.024, 0.026, 0.028, 0.029, 0.030],
   },
   {
     id: 'CS', label: 'Coronary sinus', kind: 'vein',
-    control: [[0.5, 0.16, -0.15], [0.44, 0.06, -0.42], [0.2, -0.02, -0.58], [-0.1, -0.08, -0.6], [-0.36, -0.1, -0.5]],
+    control: [[0.50, 0.16, -0.15], [0.44, 0.06, -0.42], [0.20, -0.02, -0.56], [-0.08, -0.06, -0.58], [-0.32, -0.04, -0.52]],
     radii: [0.03, 0.036, 0.042, 0.048, 0.052],
   },
   {
     id: 'MCV', label: 'Middle cardiac vein', kind: 'vein',
-    control: [[-0.27, -0.16, -0.5], [-0.1, -0.36, -0.53], [0.1, -0.6, -0.41], [0.34, -0.8, -0.2]],
+    control: [[-0.32, -0.04, -0.52], [-0.12, -0.32, -0.53], [0.10, -0.60, -0.41], [0.34, -0.80, -0.20]],
     radii: [0.02, 0.018, 0.015, 0.011],
   },
 ];
@@ -117,27 +150,43 @@ function buildRawSdf(): SdfModel {
   const m = new SdfModel();
   const L = axisDir();
 
-  // Ventricles
+  // Ventricles.
+  // A heart is a flattened cone, not a ball: in an adult it runs roughly 12 cm base to apex,
+  // 9 cm across and only 6-7 cm front to back. The anteroposterior radii below are therefore
+  // deliberately much shorter than the transverse ones, which is what gives the organ its
+  // sternocostal flatness and keeps the silhouette conical from every view.
   const lvCenter = along(0.78);
-  m.add(ellipsoid({ center: lvCenter, radii: [0.52, 0.62, 0.47], axis: L, part: Part.LV, k: 0.06 }));
-  const rvCenter = add(along(0.6), [-0.33, 0.14, 0.25]);
-  m.add(ellipsoid({ center: rvCenter, radii: [0.42, 0.55, 0.30], axis: [L[0] - 0.1, L[1], L[2] + 0.15], part: Part.RV, k: 0.11 }));
+  m.add(ellipsoid({ center: lvCenter, radii: [0.48, 0.66, 0.30], axis: L, part: Part.LV, k: 0.06 }));
+  const rvCenter = add(along(0.6), [-0.33, 0.14, 0.16]);
+  m.add(ellipsoid({ center: rvCenter, radii: [0.44, 0.58, 0.17], axis: L, part: Part.RV, k: 0.09 }));
   // Right ventricular outflow tract rising to the pulmonary valve
   m.add(tube({
-    points: splinePoints([rvCenter, [-0.14, 0.22, 0.42], [0.0, 0.42, 0.40], [0.05, 0.55, 0.37]], 5),
-    radius: splineRadii([0.30, 0.24, 0.19, 0.17], 5),
+    points: splinePoints([rvCenter, [-0.14, 0.22, 0.31], [0.0, 0.42, 0.30], [0.05, 0.55, 0.29]], 5),
+    radius: splineRadii([0.24, 0.20, 0.17, 0.16], 5),
     part: Part.RV, k: 0.1, segmentSmooth: 0.03,
   }));
 
   // Atria
-  m.add(ellipsoid({ center: [-0.56, 0.32, -0.03], radii: [0.32, 0.36, 0.33], rotation: [0.1, 0, -0.15], part: Part.RA, k: 0.12 }));
-  m.add(ellipsoid({ center: [-0.31, 0.52, 0.27], radii: [0.20, 0.14, 0.17], rotation: [0.2, -0.4, 0.3], part: Part.APPENDAGE, k: 0.08 }));
-  m.add(ellipsoid({ center: [0.05, 0.38, -0.44], radii: [0.43, 0.34, 0.30], rotation: [0.15, 0, 0], part: Part.LA, k: 0.15 }));
+  m.add(ellipsoid({ center: [-0.52, 0.32, 0.00], radii: [0.28, 0.36, 0.19], rotation: [0.1, 0, -0.15], part: Part.RA, k: 0.10 }));
+  m.add(ellipsoid({ center: [-0.30, 0.52, 0.19], radii: [0.19, 0.13, 0.12], rotation: [0.2, -0.4, 0.3], part: Part.APPENDAGE, k: 0.08 }));
+  m.add(ellipsoid({ center: [0.05, 0.38, -0.30], radii: [0.42, 0.32, 0.19], rotation: [0.15, 0, 0], part: Part.LA, k: 0.10 }));
   m.add(tube({
-    points: splinePoints([[0.36, 0.44, -0.2], [0.47, 0.42, 0.05], [0.45, 0.38, 0.27]], 6),
-    radius: splineRadii([0.14, 0.11, 0.065], 6),
+    points: splinePoints([[0.36, 0.44, -0.16], [0.47, 0.42, 0.03], [0.45, 0.38, 0.20]], 6),
+    radius: splineRadii([0.12, 0.09, 0.055], 6),
     part: Part.APPENDAGE, k: 0.07,
   }));
+
+  // Atrioventricular junction. The sulcus between atria and ventricles is real tissue, and it
+  // is what carries the coronary sinus and the right coronary artery round the back of the
+  // heart. Without it the crux is a void, and any vessel centreline projected there snaps onto
+  // whatever happens to be nearest - which is how the RCA ended up draped over the vena cava.
+  {
+    const ring: V3[] = [];
+    for (let i = 0; i <= 28; i++) ring.push(avRing(Math.PI * (0.18 + (i / 28) * 1.64), 0.46));
+    const half = Math.ceil(ring.length / 2);
+    m.add(tube({ points: splinePoints(ring.slice(0, half + 1), 3), radius: 0.13, part: Part.LA, k: 0.10, segmentSmooth: 0.04 }));
+    m.add(tube({ points: splinePoints(ring.slice(half), 3), radius: 0.13, part: Part.RA, k: 0.10, segmentSmooth: 0.04 }));
+  }
 
   // Aorta: root with sinuses, ascending, arch, descending
   m.add(tube({
@@ -176,19 +225,19 @@ function buildRawSdf(): SdfModel {
     part: Part.VCAVA, k: 0.06,
   }));
   m.add(tube({
-    points: splinePoints([[-0.58, 0.12, -0.12], [-0.6, -0.2, -0.16], [-0.62, -0.48, -0.2]], 5),
+    points: splinePoints([[-0.64, 0.18, -0.26], [-0.68, -0.06, -0.42], [-0.70, -0.30, -0.56]], 5),
     radius: splineRadii([0.13, 0.13, 0.12], 5),
     part: Part.VCAVA, k: 0.07,
   }));
 
   // Pulmonary veins (two right, two left)
   const pv = (pts: V3[]) => m.add(tube({ points: splinePoints(pts, 4), radius: splineRadii([0.09, 0.075, 0.07], 4), part: Part.PVEIN, k: 0.06 }));
-  pv([[-0.22, 0.5, -0.55], [-0.45, 0.58, -0.62], [-0.64, 0.62, -0.68]]);
-  pv([[-0.22, 0.3, -0.6], [-0.45, 0.27, -0.68], [-0.64, 0.22, -0.74]]);
-  pv([[0.32, 0.5, -0.6], [0.55, 0.58, -0.68], [0.72, 0.63, -0.74]]);
-  pv([[0.32, 0.3, -0.62], [0.55, 0.27, -0.7], [0.72, 0.22, -0.76]]);
+  pv([[-0.22, 0.50, -0.44], [-0.45, 0.58, -0.56], [-0.64, 0.62, -0.66]]);
+  pv([[-0.22, 0.30, -0.48], [-0.45, 0.27, -0.60], [-0.64, 0.22, -0.70]]);
+  pv([[0.32, 0.50, -0.46], [0.55, 0.58, -0.60], [0.72, 0.63, -0.70]]);
+  pv([[0.32, 0.30, -0.48], [0.55, 0.27, -0.62], [0.72, 0.22, -0.72]]);
 
-  m.clipBox = { min: [-1.25, -1.1, -1.35], max: [1.25, 1.4, 1.15], round: 0.02 };
+  m.clipBox = { min: [-1.25, -1.1, -1.35], max: [1.25, 1.4, 1.05], round: 0.02 };
   return m;
 }
 
@@ -200,21 +249,8 @@ export interface HeartSdf {
 /** Full model: raw union with interventricular and atrioventricular grooves carved in. */
 export function buildHeartSdf(): HeartSdf {
   const raw = buildRawSdf();
-  const L = axisDir();
-  const up = new Vector3(0, 1, 0);
-  const ax = new Vector3(L[0], L[1], L[2]);
-  const u = new Vector3().crossVectors(up, ax).normalize();
-  const v = new Vector3().crossVectors(ax, u).normalize();
   const ring: V3[] = [];
-  for (let i = 0; i <= 40; i++) {
-    const a = (i / 40) * Math.PI * 2;
-    const r = 0.62;
-    ring.push([
-      BASE[0] + (u.x * Math.cos(a) + v.x * Math.sin(a)) * r,
-      BASE[1] + (u.y * Math.cos(a) + v.y * Math.sin(a)) * r,
-      BASE[2] + (u.z * Math.cos(a) + v.z * Math.sin(a)) * r,
-    ]);
-  }
+  for (let i = 0; i <= 40; i++) ring.push(avRing((i / 40) * Math.PI * 2));
   const anteriorIV = splinePoints([[0.12, 0.33, 0.42], [0.17, 0.05, 0.5], [0.27, -0.3, 0.55], [0.42, -0.62, 0.5], [0.56, -0.86, 0.34]], 6)
     .map((p) => raw.project(p, 0.012));
   const posteriorIV = splinePoints([[-0.12, -0.02, -0.5], [0.02, -0.3, -0.5], [0.22, -0.58, -0.36], [0.45, -0.82, -0.1], [0.56, -0.9, 0.12]], 6)
